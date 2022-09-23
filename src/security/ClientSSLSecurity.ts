@@ -1,4 +1,3 @@
-
 import * as fs from 'fs';
 import * as https from 'https';
 import * as _ from 'lodash';
@@ -14,15 +13,14 @@ import { ISecurity } from '../types';
  * @param {Object}          [defaults]
  * @constructor
  */
-export class ClientSSLSecurity implements ISecurity  {
+export class ClientSSLSecurity implements ISecurity {
   private key: Buffer;
   private cert: Buffer;
   private ca;
   private defaults;
   private agent: https.Agent;
 
-  constructor(key: string | Buffer, cert: string | Buffer, defaults?: any);
-  constructor(key: string | Buffer, cert: string | Buffer, ca?: Buffer | string | any[], defaults?: any) {
+  constructor(key: string | Buffer, cert: string | Buffer, ca?: Buffer | string | any[] | any, defaults?: any) {
     if (key) {
       if (Buffer.isBuffer(key)) {
         this.key = key;
@@ -84,6 +82,6 @@ export class ClientSSLSecurity implements ISecurity  {
       httpsAgent = new https.Agent(options);
     }
 
-    options.agent = httpsAgent;
+    options.httpsAgent = httpsAgent;
   }
 }

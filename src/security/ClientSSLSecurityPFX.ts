@@ -18,6 +18,7 @@ export class ClientSSLSecurityPFX implements ISecurity {
   private passphrase: string;
 
   constructor(pfx: string | Buffer, defaults?: any);
+  constructor(pfx: string | Buffer, passphrase: string, defaults?: any);
   constructor(pfx: string | Buffer, passphrase: string, defaults?: any) {
     if (typeof passphrase === 'object') {
       defaults = passphrase;
@@ -51,6 +52,6 @@ export class ClientSSLSecurityPFX implements ISecurity {
       options.passphrase = this.passphrase;
     }
     _.merge(options, this.defaults);
-    options.agent = new https.Agent(options);
+    options.httpsAgent = new https.Agent(options);
   }
 }

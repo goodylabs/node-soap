@@ -51,11 +51,14 @@ function getDateString(d) {
 export interface Server {
   emit(event: 'request', request: any, methodName: string): boolean;
   emit(event: 'headers', headers: any, methodName: string): boolean;
+  emit(event: 'response', headers: any, methodName: string): boolean;
 
   /** Emitted for every received messages. */
   on(event: 'request', listener: (request: any, methodName: string) => void): this;
   /** Emitted when the SOAP Headers are not empty. */
   on(event: 'headers', listener: (headers: any, methodName: string) => void): this;
+  /** Emitted before sending SOAP response. */
+  on(event: 'response', listener: (response: any, methodName: string) => void): this;
 }
 
 interface IExecuteMethodOptions {
@@ -69,11 +72,11 @@ interface IExecuteMethodOptions {
 }
 
 export class Server extends EventEmitter {
-  public path: string;
+  public path: string | RegExp;
   public services: IServices;
   public log: (type: string, data: any) => any;
   public authorizeConnection: (req: Request, res?: Response) => boolean;
-  public authenticate: (security: ISecurity, processAuthResult?) => boolean;
+  public authenticate: (security: any, processAuthResult?: (result: boolean) => void, req?: Request, obj?: any) => boolean | void | Promise<boolean>;
 
   private wsdl: WSDL;
   private suppressStack: boolean;
@@ -83,7 +86,7 @@ export class Server extends EventEmitter {
   private soapHeaders: any[];
   private callback?: (err: any, res: any) => void;
 
-  constructor(server: ServerType, path: string, services: IServices, wsdl: WSDL, options?: IServerOptions) {
+  constructor(server: ServerType, path: string | RegExp, services: IServices, wsdl: WSDL, options?: IServerOptions) {
     super();
 
     options = options || {
@@ -99,8 +102,10 @@ export class Server extends EventEmitter {
     this.enableChunkedEncoding =
       options.enableChunkedEncoding === undefined ? true : !!options.enableChunkedEncoding;
     this.callback = options.callback ? options.callback : () => { };
-    if (path[path.length - 1] !== '/') {
+    if (typeof path === 'string' && path[path.length - 1] !== '/') {
       path += '/';
+    } else if (path instanceof RegExp && path.source[path.source.length - 1] !== '/') {
+      path = new RegExp(path.source + '(?:\\/|)');
     }
     wsdl.onReady((err) => {
       if (isExpress(server)) {
@@ -129,7 +134,7 @@ export class Server extends EventEmitter {
           if (reqPath[reqPath.length - 1] !== '/') {
             reqPath += '/';
           }
-          if (path === reqPath) {
+          if (path === reqPath || (path instanceof RegExp && reqPath.match(path))) {
             this._requestListener(req, res);
           } else {
             for (let i = 0, len = listeners.length; i < len; i++) {
@@ -170,29 +175,29 @@ export class Server extends EventEmitter {
 
   private _processSoapHeader(soapHeader, name, namespace, xmlns) {
     switch (typeof soapHeader) {
-    case 'object':
-      return this.wsdl.objectToXML(soapHeader, name, namespace, xmlns, true);
-    case 'function':
-      const _this = this;
-      // arrow function does not support arguments variable
-      // tslint:disable-next-line
-      return function() {
-        const result = soapHeader.apply(null, arguments);
+      case 'object':
+        return this.wsdl.objectToXML(soapHeader, name, namespace, xmlns, true);
+      case 'function':
+        const _this = this;
+        // arrow function does not support arguments variable
+        // tslint:disable-next-line
+        return function () {
+          const result = soapHeader.apply(null, arguments);
 
-        if (typeof result === 'object') {
-          return _this.wsdl.objectToXML(result, name, namespace, xmlns, true);
-        } else {
-          return result;
-        }
-      };
-    default:
-      return soapHeader;
+          if (typeof result === 'object') {
+            return _this.wsdl.objectToXML(result, name, namespace, xmlns, true);
+          } else {
+            return result;
+          }
+        };
+      default:
+        return soapHeader;
     }
   }
 
   private _initializeOptions(options: IServerOptions) {
     this.wsdl.options.attributesKey = options.attributesKey || 'attributes';
-    this.onewayOptions.statusCode = this.onewayOptions.responseCode || 200;
+    this.onewayOptions.statusCode = this.onewayOptions.responseCode || 200;
     this.onewayOptions.emptyBody = !!this.onewayOptions.emptyBody;
   }
 
@@ -202,7 +207,7 @@ export class Server extends EventEmitter {
       if (typeof this.log === 'function') {
         this.log('received', xml);
       }
-      this._process(xml, req, (result, statusCode) => {
+      this._process(xml, req, res, (result, statusCode) => {
         this._sendHttpResponse(res, statusCode, result);
         if (typeof this.log === 'function') {
           this.log('replied', result);
@@ -236,7 +241,8 @@ export class Server extends EventEmitter {
     }
 
     if (req.method === 'GET') {
-      if (reqQuery && reqQuery.toLowerCase() === '?wsdl') {
+
+      if (reqQuery && reqQuery.toLowerCase().startsWith('?wsdl')) {
         if (typeof this.log === 'function') {
           this.log('info', 'Wants the WSDL');
         }
@@ -253,7 +259,7 @@ export class Server extends EventEmitter {
 
       // request body is already provided by an express middleware
       // in this case unzipping should also be done by the express middleware itself
-      if (req.body && Object.keys(req.body).length > 0) {
+      if (req.body && req.body.length > 0) {
         return this._processRequestXml(req, res, req.body.toString());
       }
 
@@ -277,7 +283,17 @@ export class Server extends EventEmitter {
     }
   }
 
-  private _process(input, req: Request, callback: (result: any, statusCode?: number) => any) {
+  private _getSoapAction(req: Request) {
+    if (typeof req.headers.soapaction === 'undefined') {
+         return;
+     }
+    const soapAction: string = req.headers.soapaction as string;
+    return (soapAction.indexOf('"') === 0)
+         ? soapAction.slice(1, -1)
+         : soapAction;
+  }
+
+  private _process(input, req: Request, res: Response, cb: (result: any, statusCode?: number) => any) {
     const pathname = url.parse(req.url).pathname.replace(/\/$/, '');
     const obj = this.wsdl.xmlToObject(input);
     const body = obj.Body;
@@ -288,6 +304,12 @@ export class Server extends EventEmitter {
     let portName: string;
     const includeTimestamp = obj.Header && obj.Header.Security && obj.Header.Security.Timestamp;
     const authenticate = this.authenticate || function defaultAuthenticate() { return true; };
+
+    const callback = (result, statusCode) => {
+      const response = { result: result };
+      this.emit('response', response, methodName);
+      cb(response.result, statusCode);
+    };
 
     const process = () => {
 
@@ -337,41 +359,42 @@ export class Server extends EventEmitter {
       }
 
       try {
-        if (binding.style === 'rpc') {
-          methodName = Object.keys(body)[0];
+        const soapAction = this._getSoapAction(req);
+        const messageElemName = (Object.keys(body)[0] === 'attributes' ? Object.keys(body)[1] : Object.keys(body)[0]);
+        const pair = binding.topElements[messageElemName];
+        if (soapAction) {
+          methodName = this._getMethodNameBySoapAction(binding, soapAction);
+        } else {
+          methodName = pair ? pair.methodName : messageElemName;
+        }
+        /** Style can be defined in method. If method has no style then look in binding */
+        const style = binding.methods[methodName].style || binding.style;
 
-          this.emit('request', obj, methodName);
-          if (headers) {
-            this.emit('headers', headers, methodName);
-          }
+        this.emit('request', obj, methodName);
+        if (headers) {
+          this.emit('headers', headers, methodName);
+        }
 
+        if (style === 'rpc') {
           this._executeMethod({
             serviceName: serviceName,
             portName: portName,
             methodName: methodName,
-            outputName: methodName + 'Response',
-            args: body[methodName],
+            outputName: messageElemName + 'Response',
+            args: body[messageElemName],
             headers: headers,
             style: 'rpc',
-          }, req, callback);
+          }, req, res, callback);
         } else {
-          const messageElemName = (Object.keys(body)[0] === 'attributes' ? Object.keys(body)[1] : Object.keys(body)[0]);
-          const pair = binding.topElements[messageElemName];
-
-          this.emit('request', obj, pair.methodName);
-          if (headers) {
-            this.emit('headers', headers, pair.methodName);
-          }
-
           this._executeMethod({
             serviceName: serviceName,
             portName: portName,
-            methodName: pair.methodName,
+            methodName: methodName,
             outputName: pair.outputName,
             args: body[messageElemName],
             headers: headers,
             style: 'document',
-          }, req, callback, includeTimestamp);
+          }, req, res, callback, includeTimestamp);
         }
       } catch (error) {
         if (error.Fault !== undefined) {
@@ -385,10 +408,27 @@ export class Server extends EventEmitter {
     // Authentication
     if (typeof authenticate === 'function') {
       let authResultProcessed = false;
-      const processAuthResult = (authResult) => {
-        if (!authResultProcessed && (authResult || authResult === false)) {
-          authResultProcessed = true;
-          if (authResult) {
+      const processAuthResult = (authResult: boolean | Error) => {
+        if (authResultProcessed) {
+          return;
+        }
+
+        authResultProcessed = true;
+        // Handle errors
+        if (authResult instanceof Error) {
+          return this._sendError({
+            Code: {
+              Value: 'SOAP-ENV:Server',
+              Subcode: { Value: 'InternalServerError' },
+            },
+            Reason: { Text: authResult.toString() },
+            statusCode: 500,
+          }, callback, includeTimestamp);
+        }
+
+        // Handle actual results
+        if (typeof authResult === 'boolean') {
+          if (authResult === true) {
             try {
               process();
             } catch (error) {
@@ -398,7 +438,7 @@ export class Server extends EventEmitter {
               return this._sendError({
                 Code: {
                   Value: 'SOAP-ENV:Server',
-                  Subcode: { value: 'InternalServerError' },
+                  Subcode: { Value: 'InternalServerError' },
                 },
                 Reason: { Text: error.toString() },
                 statusCode: 500,
@@ -408,7 +448,7 @@ export class Server extends EventEmitter {
             return this._sendError({
               Code: {
                 Value: 'SOAP-ENV:Client',
-                Subcode: { value: 'AuthenticationFailure' },
+                Subcode: { Value: 'AuthenticationFailure' },
               },
               Reason: { Text: 'Invalid username or password' },
               statusCode: 401,
@@ -417,15 +457,34 @@ export class Server extends EventEmitter {
         }
       };
 
-      processAuthResult(authenticate(obj.Header && obj.Header.Security, processAuthResult));
+      const functionResult = authenticate(obj.Header && obj.Header.Security, processAuthResult, req, obj);
+      if (isPromiseLike<boolean>(functionResult)) {
+        functionResult.then((result: boolean) => {
+          processAuthResult(result);
+        }, (err: any) => {
+          processAuthResult(err);
+        });
+      }
+      if (typeof functionResult === 'boolean') {
+        processAuthResult(functionResult);
+      }
     } else {
       throw new Error('Invalid authenticate function (not a function)');
+    }
+  }
+
+  private _getMethodNameBySoapAction(binding: BindingElement, soapAction: string) {
+    for (const methodName in binding.methods) {
+      if (binding.methods[methodName].soapAction === soapAction) {
+        return methodName;
+      }
     }
   }
 
   private _executeMethod(
     options: IExecuteMethodOptions,
     req: Request,
+    res: Response,
     callback: (result: any, statusCode?: number) => any,
     includeTimestamp?,
   ) {
@@ -435,6 +494,7 @@ export class Server extends EventEmitter {
     let headers;
     const serviceName = options.serviceName;
     const portName = options.portName;
+    const binding = this.wsdl.definitions.services[serviceName].ports[portName].binding;
     const methodName = options.methodName;
     const outputName = options.outputName;
     const args = options.args;
@@ -443,7 +503,7 @@ export class Server extends EventEmitter {
     if (this.soapHeaders) {
       headers = this.soapHeaders.map((header) => {
         if (typeof header === 'function') {
-          return header(methodName, args, options.headers, req);
+          return header(methodName, args, options.headers, req, res, this);
         } else {
           return header;
         }
@@ -470,7 +530,7 @@ export class Server extends EventEmitter {
           return this._sendError({
             Code: {
               Value: 'SOAP-ENV:Server',
-              Subcode: { value: 'InternalServerError' },
+              Subcode: { Value: 'InternalServerError' },
             },
             Reason: { Text: error.toString() },
             statusCode: 500,
@@ -480,14 +540,26 @@ export class Server extends EventEmitter {
 
       if (style === 'rpc') {
         body = this.wsdl.objectToRpcXML(outputName, result, '', this.wsdl.definitions.$targetNamespace);
-      } else {
-        const element = this.wsdl.definitions.services[serviceName].ports[portName].binding.methods[methodName].output;
+      } else if (style === 'document') {
+        const element = binding.methods[methodName].output;
         body = this.wsdl.objectToDocumentXML(outputName, result, element.targetNSAlias, element.targetNamespace);
+      } else {
+        const element = binding.methods[methodName].output;
+        // Check for targetNamespace on the element
+        const elementTargetNamespace = element.$targetNamespace;
+        let outputNameWithNamespace = outputName;
+
+        if (elementTargetNamespace) {
+          // if targetNamespace is set on the element concatinate it with the outputName
+          outputNameWithNamespace = `${elementTargetNamespace}:${outputNameWithNamespace}`;
+        }
+
+        body = this.wsdl.objectToDocumentXML(outputNameWithNamespace, result, element.targetNSAlias, element.targetNamespace);
       }
       callback(this._envelope(body, headers, includeTimestamp));
     };
 
-    if (!this.wsdl.definitions.services[serviceName].ports[portName].binding.methods[methodName].output) {
+    if (!binding.methods[methodName].output) {
       // no output defined = one-way operation so return empty response
       handled = true;
       body = '';
@@ -508,7 +580,7 @@ export class Server extends EventEmitter {
       handleResult(error, result);
     };
 
-    const result = method(args, methodCallback, options.headers, req);
+    const result = method(args, methodCallback, options.headers, req, res, this);
     if (typeof result !== 'undefined') {
       if (isPromiseLike<any>(result)) {
         result.then((value) => {

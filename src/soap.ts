@@ -3,7 +3,6 @@
  * MIT Licensed
  */
 
-import * as BluebirdPromise from 'bluebird';
 import * as debugBuilder from 'debug';
 import { Client } from './client';
 import * as _security from './security';
@@ -16,10 +15,11 @@ const debug = debugBuilder('node-soap:soap');
 export const security = _security;
 export { Client } from './client';
 export { HttpClient } from './http';
-export { BasicAuthSecurity, BearerSecurity, ClientSSLSecurity, ClientSSLSecurityPFX, NTLMSecurity, WSSecurity, WSSecurityCert } from './security';
+export { BasicAuthSecurity, BearerSecurity, ClientSSLSecurity, ClientSSLSecurityPFX, NTLMSecurity, WSSecurity, WSSecurityCert, WSSecurityPlusCert } from './security';
 export { Server } from './server';
 export { passwordDigest } from './utils';
 export * from './types';
+export { WSDL } from './wsdl';
 
 type WSDLCallback = (error: any, result?: WSDL) => any;
 
@@ -43,6 +43,7 @@ function createCache() {
     }
   };
 }
+
 const getFromCache = createCache();
 
 function _requestWSDL(url: string, options: IOptions, callback: WSDLCallback) {
@@ -84,11 +85,11 @@ export function createClient(url: string, p2: CreateClientCallback | IOptions, p
   });
 }
 
-export function createClientAsync(url: string, options: IOptions, endpoint?: string): BluebirdPromise<Client> {
+export function createClientAsync(url: string, options?: IOptions, endpoint?: string): Promise<Client> {
   if (typeof options === 'undefined') {
     options = {};
   }
-  return new BluebirdPromise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     createClient(url, options, (err, client) => {
       if (err) {
         reject(err);
@@ -98,14 +99,14 @@ export function createClientAsync(url: string, options: IOptions, endpoint?: str
   });
 }
 
-export function listen(server: ServerType, path: string, services: IServices, wsdl: string, callback?: (err: any, res: any) => void): Server;
+export function listen(server: ServerType, path: string | RegExp, services: IServices, wsdl: string, callback?: (err: any, res: any) => void): Server;
 export function listen(server: ServerType, options: IServerOptions): Server;
-export function listen(server: ServerType, p2: string | IServerOptions, services?: IServices, xml?: string, callback?: (err: any, res: any) => void): Server {
+export function listen(server: ServerType, p2: string | RegExp | IServerOptions, services?: IServices, xml?: string, callback?: (err: any, res: any) => void): Server {
   let options: IServerOptions;
-  let path: string;
+  let path: string | RegExp;
   let uri = '';
 
-  if (typeof p2 === 'object') {
+  if (typeof p2 === 'object' && !(p2 instanceof RegExp)) {
     // p2 is options
     // server, options
     options = p2;

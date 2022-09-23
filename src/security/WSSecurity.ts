@@ -1,7 +1,7 @@
 
 import * as crypto from 'crypto';
 import { ISecurity } from '../types';
-import { passwordDigest } from '../utils';
+import { passwordDigest, xmlEscape } from '../utils';
 
 const validPasswordTypes = ['PasswordDigest', 'PasswordText'];
 
@@ -12,6 +12,7 @@ export interface IWSSecurityOptions {
   hasTokenCreated?: boolean;
   actor?: string;
   mustUnderstand?;
+  envelopeKey?: string;
 }
 
 export class WSSecurity implements ISecurity {
@@ -23,11 +24,13 @@ export class WSSecurity implements ISecurity {
   private _hasTokenCreated: boolean;
   private _actor: string;
   private _mustUnderstand: boolean;
+  private _envelopeKey: string;
 
   constructor(username: string, password: string, options?: string | IWSSecurityOptions) {
     options = options || {};
     this._username = username;
     this._password = password;
+    this._envelopeKey = 'soap';
     // must account for backward compatibility for passwordType String param as well as object options defaults: passwordType = 'PasswordText', hasTimeStamp = true
     if (typeof options === 'string') {
       this._passwordType = options ? options : 'PasswordText';
@@ -52,6 +55,9 @@ export class WSSecurity implements ISecurity {
     if (options.mustUnderstand != null) {
       this._mustUnderstand = !!options.mustUnderstand;
     }
+    if (options.envelopeKey) {
+      this._envelopeKey = options.envelopeKey;
+    }
   }
 
   public toXML(): string {
@@ -71,7 +77,7 @@ export class WSSecurity implements ISecurity {
     const created = getDate(now);
     let timeStampXml = '';
     if (this._hasTimeStamp) {
-      const expires = getDate( new Date(now.getTime() + (1000 * 600)) );
+      const expires = getDate(new Date(now.getTime() + (1000 * 600)));
       timeStampXml = '<wsu:Timestamp wsu:Id="Timestamp-' + created + '">' +
         '<wsu:Created>' + created + '</wsu:Created>' +
         '<wsu:Expires>' + expires + '</wsu:Expires>' +
@@ -87,23 +93,23 @@ export class WSSecurity implements ISecurity {
       nonce = nHash.digest('base64');
     }
     if (this._passwordType === 'PasswordText') {
-      password = '<wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordText">' + this._password + '</wsse:Password>';
+      password = '<wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordText">' + xmlEscape(this._password) + '</wsse:Password>';
       if (nonce) {
         password += '<wsse:Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">' + nonce + '</wsse:Nonce>';
       }
     } else {
-    /* Specific Testcase for passwordDigest calculation cover this code
-    /* istanbul ignore next */
+      /* Specific Testcase for passwordDigest calculation cover this code
+      /* istanbul ignore next */
       password = '<wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">' + passwordDigest(nonce, created, this._password) + '</wsse:Password>' +
         '<wsse:Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">' + nonce + '</wsse:Nonce>';
     }
 
-    return '<wsse:Security ' + (this._actor ? 'soap:actor="' + this._actor + '" ' : '') +
-      (this._mustUnderstand ? 'soap:mustUnderstand="1" ' : '') +
+    return '<wsse:Security ' + (this._actor ? `${this._envelopeKey}:actor="${this._actor}" ` : '') +
+      (this._mustUnderstand ? `${this._envelopeKey}:mustUnderstand="1" ` : '') +
       'xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">' +
       timeStampXml +
       '<wsse:UsernameToken xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" wsu:Id="SecurityToken-' + created + '">' +
-      '<wsse:Username>' + this._username + '</wsse:Username>' +
+      '<wsse:Username>' + xmlEscape(this._username) + '</wsse:Username>' +
       password +
       (this._hasTokenCreated ? '<wsu:Created>' + created + '</wsu:Created>' : '') +
       '</wsse:UsernameToken>' +

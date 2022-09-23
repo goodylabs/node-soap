@@ -1,21 +1,37 @@
 
-import * as req from 'request';
-import { HttpClient } from './http';
+import * as req from 'axios';
+import { ReadStream } from 'fs';
 
 export interface IHeaders {
   [k: string]: any;
+}
+
+export interface IExOptions {
+  [key: string]: any;
+}
+
+export interface IHttpClient {
+  request(rurl: string, data: any, callback: (error: any, res?: any, body?: any) => any, exheaders?: IHeaders, exoptions?: IExOptions, caller?): req.AxiosPromise;
+  requestStream?(rurl: string, data: any, exheaders?: IHeaders, exoptions?: IExOptions, caller?): req.AxiosPromise<ReadStream>;
 }
 
 /** @deprecated use SoapMethod */
 export type ISoapMethod = SoapMethod;
 export type SoapMethod = (
   args: any,
-  callback: (err: any, result: any, rawResponse: any, soapHeader: any, rawRequest: any) => void,
+  callback: (err: any, result: any, rawResponse: any, soapHeader: any, rawRequest: any, mtomAttachments?: IMTOMAttachments) => void,
   options?: any,
   extraHeaders?: any,
+  mtomAttachments?: IMTOMAttachments,
 ) => void;
 
-export type ISoapServiceMethod = (args: any, callback?: (data: any) => void, headers?: any, req?: any) => any;
+export type SoapMethodAsync = (
+  args: any,
+  options?: any,
+  extraHeaders?: any,
+) => Promise<[any, any, any, any, IMTOMAttachments?]>;
+
+export type ISoapServiceMethod = (args: any, callback?: (data: any) => void, headers?: any, req?: any, res?: any, sender?: any) => any;
 
 // SOAP Fault 1.1 & 1.2
 export interface ISoapFaultError {
@@ -37,7 +53,7 @@ export interface ISoapFault11 {
 // Role, Node, Detail. Should be added when soap module implements them
 // https://www.w3.org/TR/soap12/#soapfault
 export interface ISoapFault12 {
-  Code: { Value: string; Subcode?: { value: string; }; };
+  Code: { Value: string; Subcode?: { Value: string; }; };
   Reason: { Text: string; };
   statusCode?: number;
 }
@@ -106,16 +122,20 @@ export interface IOptions extends IWsdlBaseOptions {
   /** set specific key instead of <pre><soap:Body></soap:Body></pre>. */
   envelopeKey?: string;
   /** provide your own http client that implements request(rurl, data, callback, exheaders, exoptions) */
-  httpClient?: HttpClient;
+  httpClient?: IHttpClient;
   /** override the request module. */
-  request?: req.RequestAPI<req.Request, req.CoreOptions, req.RequiredUriUrl>;
+  request?: req.AxiosInstance;
   stream?: boolean;
+  // allows returning the underlying saxStream that parse the SOAP XML response
+  returnSaxStream?: boolean;
   // wsdl options that only work for client
   customDeserializer?: any;
   /** if your wsdl operations contains names with Async suffix, you will need to override the default promise suffix to a custom one, default: Async. */
   overridePromiseSuffix?: string;
   /** @internal */
   WSDL_CACHE?;
+  /** handle MTOM soapAttachments in response */
+  parseReponseAttachments?: boolean;
 }
 
 export interface IOneWayOptions {
@@ -124,7 +144,7 @@ export interface IOneWayOptions {
 }
 
 export interface IServerOptions extends IWsdlBaseOptions {
-  path: string;
+  path: string | RegExp;
   services: IServices;
   xml?: string;
   uri?: string;
@@ -134,4 +154,11 @@ export interface IServerOptions extends IWsdlBaseOptions {
   oneWay?: IOneWayOptions;
   /** A boolean for controlling chunked transfer encoding in response. Some client (such as Windows 10's MDM enrollment SOAP client) is sensitive to transfer-encoding mode and can't accept chunked response. This option let user disable chunked transfer encoding for such a client. Default to true for backward compatibility. */
   enableChunkedEncoding?: boolean;
+}
+
+export interface IMTOMAttachments {
+  parts: Array<{
+    body: Buffer,
+    headers: { [key: string]: string },
+  }>;
 }
